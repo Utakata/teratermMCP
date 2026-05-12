@@ -33,6 +33,7 @@ add_subdirectory(TTXShowCommandLine)
 set_target_properties(TTXShowCommandLine PROPERTIES FOLDER TTXSamples)
 
 add_subdirectory(ttxtest)
+add_subdirectory(TTXMCP)
 set_target_properties(TTXtest PROPERTIES FOLDER TTXSamples)
 
 add_subdirectory(TTXttyrec)

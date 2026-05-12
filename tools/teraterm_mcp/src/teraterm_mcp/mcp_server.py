@@ -1,5 +1,6 @@
 import asyncio
-import httpx
+import socket
+import json
 import logging
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -9,7 +10,25 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger("teraterm_mcp")
 
 app = Server("teraterm-mcp")
-API_BASE_URL = "http://127.0.0.1:8000"
+TTXMCP_HOST = "127.0.0.1"
+TTXMCP_PORT = 8001
+
+def send_to_plugin(payload: dict) -> dict:
+    """Send a JSON payload to the TTXMCP native plugin via TCP socket."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(5.0)
+            s.connect((TTXMCP_HOST, TTXMCP_PORT))
+            s.sendall((json.dumps(payload) + "\n").encode('utf-8'))
+
+            data = s.recv(4096)
+            if data:
+                return json.loads(data.decode('utf-8'))
+            return {"status": "error", "message": "No response from plugin"}
+    except ConnectionRefusedError:
+        return {"status": "error", "message": "Could not connect to Tera Term. Is Tera Term running with the TTXMCP plugin installed?"}
+    except Exception as e:
+        return {"status": "error", "message": f"Socket error: {str(e)}"}
 
 @app.list_tools()
 async def list_tools() -> list[Tool]:
@@ -17,114 +36,46 @@ async def list_tools() -> list[Tool]:
     return [
         Tool(
             name="teraterm_connect",
-            description="Connect to a target device (serial COM port or SSH) via Tera Term. Always call this first before sending commands.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "target": {
-                        "type": "string",
-                        "description": "The target to connect to (e.g., 'COM3', '192.168.1.1', 'yamaha_router')"
-                    },
-                    "connection_type": {
-                        "type": "string",
-                        "enum": ["serial", "ssh"],
-                        "description": "The type of connection ('serial' or 'ssh')"
-                    },
-                    "baud_rate": {
-                        "type": "integer",
-                        "description": "Baud rate for serial connections (default: 9600)"
-                    },
-                    "encoding": {
-                        "type": "string",
-                        "description": "Character encoding (e.g., 'UTF-8', 'SJIS')"
-                    }
-                },
-                "required": ["target", "connection_type"]
-            }
+            description="Inform the MCP to start monitoring the active Tera Term session.",
+            inputSchema={"type": "object", "properties": {}}
         ),
         Tool(
             name="teraterm_read_buffer",
-            description="Read the current output buffer from Tera Term. Use this to monitor the terminal output and check the prompt state before sending commands.",
-            inputSchema={
-                "type": "object",
-                "properties": {}
-            }
+            description="Read the current output buffer from the active Tera Term session.",
+            inputSchema={"type": "object", "properties": {}}
         ),
         Tool(
             name="teraterm_send_command",
-            description="Inject a command into the Tera Term session. Wait for the command to complete and return the output.",
+            description="Inject a command into the active Tera Term session.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "command": {
                         "type": "string",
                         "description": "The command to execute"
-                    },
-                    "wait_for_prompt": {
-                        "type": "boolean",
-                        "description": "Whether to wait for the command prompt to return (default: true)"
                     }
                 },
                 "required": ["command"]
-            }
-        ),
-        Tool(
-            name="teraterm_disconnect",
-            description="Disconnect the current Tera Term session.",
-            inputSchema={
-                "type": "object",
-                "properties": {}
             }
         )
     ]
 
 @app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-    """Handle tool execution requests."""
-    try:
-        async with httpx.AsyncClient() as client:
-            if name == "teraterm_connect":
-                response = await client.post(f"{API_BASE_URL}/connect", json=arguments)
-                response.raise_for_status()
-                result = response.json()
-                return [TextContent(type="text", text=result.get("message", str(result)))]
+    """Handle tool execution requests by forwarding to the native C plugin."""
 
-            elif name == "teraterm_read_buffer":
-                response = await client.get(f"{API_BASE_URL}/read")
-                response.raise_for_status()
-                result = response.json()
-                output = result.get("output", "")
-                if not output:
-                    output = "[Buffer empty]"
-                return [TextContent(type="text", text=output)]
+    payload = {"action": name, "args": arguments}
 
-            elif name == "teraterm_send_command":
-                response = await client.post(f"{API_BASE_URL}/send", json=arguments)
-                response.raise_for_status()
-                result = response.json()
-                return [TextContent(type="text", text=result.get("output", str(result)))]
+    # Run socket communication in a thread pool to avoid blocking the async event loop
+    result = await asyncio.to_thread(send_to_plugin, payload)
 
-            elif name == "teraterm_disconnect":
-                response = await client.post(f"{API_BASE_URL}/disconnect")
-                response.raise_for_status()
-                result = response.json()
-                return [TextContent(type="text", text=result.get("message", str(result)))]
+    if result.get("status") == "error":
+        error_msg = result.get("message", "Unknown error")
+        logger.error(f"Plugin error: {error_msg}")
+        return [TextContent(type="text", text=f"Error: {error_msg}")]
 
-            else:
-                raise ValueError(f"Unknown tool: {name}")
-
-    except httpx.ConnectError:
-        error_msg = "Error: Could not connect to the Tera Term API server. Ensure it is running on port 8000."
-        logger.error(error_msg)
-        return [TextContent(type="text", text=error_msg)]
-    except httpx.HTTPStatusError as e:
-        error_msg = f"API returned an error: {e.response.status_code} - {e.response.text}"
-        logger.error(error_msg)
-        return [TextContent(type="text", text=error_msg)]
-    except Exception as e:
-        error_msg = f"Error executing tool {name}: {str(e)}"
-        logger.error(error_msg)
-        return [TextContent(type="text", text=error_msg)]
+    output = result.get("output", result.get("message", "Success"))
+    return [TextContent(type="text", text=str(output))]
 
 async def main_async():
     """Run the MCP server."""
