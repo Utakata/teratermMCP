@@ -40,3 +40,26 @@ To test and use this plugin locally with Claude Code:
 ## Future Enhancements
 - Replace the mocked API responses with actual `ttpmacro.exe` execution or DDE/named-pipe communication with the Tera Term process.
 - Implement robust character encoding handling (SJIS/UTF-8 conversions) within the API server.
+
+### Using with Claude Desktop (Antigravity)
+
+Because this plugin strictly adheres to the Model Context Protocol (MCP), it is fully compatible with Claude Desktop and other MCP-compliant clients.
+
+To use it with Claude Desktop, add the following configuration to your `claude_desktop_config.json` (located in `%APPDATA%\Claude` on Windows or `~/Library/Application Support/Claude` on macOS):
+
+```json
+{
+  "mcpServers": {
+    "teraterm-mcp": {
+      "command": "python",
+      "args": ["-m", "teraterm_mcp.mcp_server"],
+      "env": {
+        "PYTHONPATH": "C:\\path\\to\\your\\teraterm\\tools\\teraterm_mcp\\src"
+      }
+    }
+  }
+}
+```
+*Note: Ensure the `PYTHONPATH` points to the absolute path of the `src` directory within your cloned repository.*
+
+Once configured and restarted, Claude Desktop (Antigravity) will automatically detect the tools (`teraterm_connect`, `teraterm_send_command`, etc.) and can be asked to "Connect to the COM port via Tera Term and configure the Yamaha router".
